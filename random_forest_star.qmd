@@ -1,0 +1,754 @@
+---
+title: "random_forest"
+format: html
+editor: visual
+---
+
+# Description
+
+This is the R code used to run each Random Forest model. It also includes the model validation (cross-validation, OOB values, and Observed vs Predicted plots), variable importance analyses, explainable machine learning (h-statistic and partial dependence plots), and the code to reproduce our predictions using different time spans.
+
+## Libraries
+
+```{r}
+pacman::p_load(tidymodels, tidyverse, future, doRNG,GGally, tictoc, pdp,foreach,doParallel, ranger, hstats, corrr ) 
+```
+
+## Data
+
+This data set contains all three data sets used in the study, including species richness and predictors.
+
+```{r}
+data<-readRDS("all_data_star.rds")
+names(data)
+
+```
+
+Filter the "DataSet" column to analyze individual data sets or omit filtering to use all data sets combined
+
+```{r}
+table(data$DataSet)
+```
+
+Filtering data set, example:
+
+```{r}
+data <- data[data$DataSet == "Atlases", ]
+```
+
+# Ramdom forest
+
+## Model settings
+
+#### Set the predictors and response
+
+```{r}
+
+responses<-"richness"
+
+#first trial predictors
+
+predictors<-c("tas","tmax","tmin","pr","AREA", "lon", "lat","start_year","time_span", "median_ndvi","Broad_leaved_forest", "Complex_cultivation_patterns",  "Construction_sites", "Coniferous_forest","Continuous_urban_fabric","Discontinuous_urban_fabric", "Green_urban_areas", "Land_principally_occupied_by_agriculture__with_significant_areas_of_natural_vegetation", "Mixed_forest", "Moors_and_heathland", "Natural_grasslands", "Pastures", "Transitional_woodland_shrub", "Water_bodies","Water_courses", "Protected_area")
+
+#NOTE: Post-correlation analysis → replace with uncorrelated predictors only. See "Important Note"
+```
+
+#### Set partition, engine, and metrics
+
+```{r}
+split_prop<-3/4 #75% of data in training & 25% for validation
+ml_engine<-"ranger"
+ml_mode<-"regression"
+ml_metrics<-metric_set(rmse, rsq, mae)
+```
+
+## Tuning parameters
+
+```{r}
+tuning_params<- expand.grid(
+  mtry=c(5, 7,10,13,17), #number predictors, replace with the max. number of pred.
+  trees=c(500,1000,1500, 2000, 2500, 3000),
+  min_n=c(2,5)# Minimum number of samples required to split an internal node
+)
+
+NROW(tuning_params)
+```
+
+## Data preparation
+
+```{r}
+ml_data<-select(data,any_of(c(responses, predictors)))
+```
+
+### Check data plots
+
+```{r}
+par(mfrow = c(2, 2))
+plot(ml_data$AREA, ml_data$richness)
+plot(ml_data$lat, ml_data$richness)
+plot(ml_data$time_span, ml_data$richness)
+plot(ml_data$AREA, ml_data$time_span)
+
+```
+
+## Preparing training and testing data
+
+```{r}
+set.seed(9872345)
+ml_split<-initial_split(ml_data, prop = split_prop)
+
+ml_split
+```
+
+## Create a cross-validation set for later use
+
+```{r}
+ml_cv<- vfold_cv(training(ml_split))
+```
+
+## Create recipe
+
+```{r}
+
+formula <- as.formula(paste(responses, paste(predictors, collapse = "+"), sep = "~"))
+
+ml_recipe <- recipe(formula, data = ml_data) %>%
+  # Remove NAs
+  step_naomit()
+```
+
+# Create the model
+
+```{r}
+rf_model <- 
+  # specify that the model is a random forest
+  rand_forest() %>%
+  # Parameters to be tuned
+  set_args(mtry = tune(),
+           trees = tune(),
+           min_n = tune()) %>%
+  # Select the modeling engine
+  set_engine(engine = ml_engine, importance = "permutation") %>%
+  # Select between regression and binary classification
+  set_mode(ml_mode)
+```
+
+## Create a workflow
+
+```{r}
+
+rf_workflow <- workflow() %>%
+  # add the recipe
+  add_recipe(ml_recipe) %>%
+  # add the model
+  add_model(rf_model)
+
+```
+
+## Tune parameters
+
+```{r}
+
+num_cores <- 30  
+plan(multisession, workers = num_cores)
+
+tic()
+# extract results
+rf_tune_results <- rf_workflow %>%
+  tune_grid(resamples = ml_cv, #Cross-validation data object
+            # Grid of hyperparameters
+            grid = tuning_params, 
+            # Metrics to evaluate
+            metrics = ml_metrics
+            )
+toc()
+
+save.image("model.RData")
+```
+
+## Plot tunned parameters
+
+```{r}
+autoplot(rf_tune_results) 
+
+```
+
+## Collect and evaluate results
+
+```{r}
+rf_tune_results %>%
+  collect_metrics()
+```
+
+## The very best of tunning
+
+```{r}
+param_final <- rf_tune_results %>%
+  select_best(metric = "rmse")
+print(param_final)
+
+```
+
+## Finalize workflow
+
+```{r}
+rf_workflow <- rf_workflow %>%
+  finalize_workflow(param_final)
+```
+
+# Fit the final model to the training and testing data
+
+```{r}
+rf_fit <- rf_workflow %>%
+  # fit on the training set and evaluate on test set
+  last_fit(ml_split)
+```
+
+### R square et al.
+
+```{r}
+test_performance <- rf_fit %>% collect_metrics()
+test_performance
+
+```
+
+# Variable Importance Plot (VIP)
+
+```{r}
+library(vip)
+f_model <- extract_fit_parsnip(rf_fit)
+
+# Plot variable importance
+importance_scores<-vip(f_model$fit,  num_features = 27,geom = "col")
+importance_scores
+
+importance_scores$data <- importance_scores$data %>%
+  mutate(Variable = ifelse(Variable == "Land_principally_occupied_by_agriculture__with_significant_areas_of_natural_vegetation", 
+                           "Agr_NatVeg", Variable))
+
+
+# Define a custom color scale with blue shades
+blue_shades <- colorRampPalette(c("lightblue", "darkblue"))(15)
+
+# Plot with custom blue shades
+vip<-ggplot(importance_scores$data, aes(x = reorder(Variable, Importance), y = Importance, fill = Importance)) +
+  geom_col() +
+  scale_fill_gradient(low = "lightblue", high = "darkblue") +
+  coord_flip() +
+  theme_minimal() +
+  labs(title = "VIP_model ALL data", x = "Variables", y = "Importance")
+
+
+#ggsave(plot=vip, "vip_all.png", bg="white")
+
+vip
+
+```
+
+## Check correlations
+
+Here is a way to rank the predictors according to their importance values and obtain the correlation matrix accordingly
+
+```{r}
+importance_all<-importance_scores[["data"]]%>%
+  as.data.frame()
+saveRDS(importance_all,"importance_all.rds")
+```
+
+```{r}
+ml_train2<-ml_recipe%>% prep()%>% juice()
+
+
+top_predictors <- importance_scores$data$Variable
+print(top_predictors)
+
+
+final_data <- ml_train2 %>%
+  select(all_of(top_predictors))
+
+library(corrr)
+
+correlation_matrix <- final_data %>%
+  correlate()
+rplot(correlation_matrix) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+
+```{r}
+# Convert the correlation matrix to a data frame
+correlation_df <- correlation_matrix %>%
+  stretch()
+
+
+# Print the data frame
+#print(correlation_df_first)
+correlation_df<-as.data.frame(correlation_df)
+correlation_df
+
+#write.csv(correlation_df,"correlation_df_all.csv")
+```
+
+# Important Note
+
+Following VIP analysis, we identified highly correlated predictors (\|r\| \> 0.7) and refitted the Random Forest model using only uncorrelated top predictors. Thus, to obtain the final model for each data set, you should modify the list of predictors accordingly and re-run the model. Before doing that, we suggest to delete all objects from the Global environment, and restart the R session, otherwise Rstudio could collapse.
+
+## Model performance
+
+### OOB
+
+```{r}
+
+ranger_model <- extract_fit_parsnip(rf_fit)$fit
+
+oob_r2 <- ranger_model$r.squared
+print(oob_r2)
+
+oob_mse <- ranger_model$prediction.error
+print(oob_mse)
+```
+
+### CV
+
+```{r}
+ml_metrics <- metric_set(rmse, rsq, mae)
+
+set.seed(9872345)
+cv_results <- rf_workflow %>%
+  fit_resamples(
+    resamples = ml_cv,
+    metrics = ml_metrics,
+    control = control_resamples(save_pred = TRUE)
+  )
+
+cv_metrics <- collect_metrics(cv_results)
+print(cv_metrics)
+```
+
+### Observed vs. predicted
+
+```{r}
+
+resultados <- collect_predictions(rf_fit)
+
+library(ggplot2)
+
+ggplot(resultados, aes(x = .pred, y = richness)) +
+  geom_point(alpha = 0.6) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  labs(x = "Predicted", y = "Observed", title = "Observed vs Predicted") +
+  theme_minimal()
+
+```
+
+# Interactions
+
+### HSTATS
+
+```{r}
+
+ml_train2<-ml_recipe%>% prep()%>% juice()
+
+
+set.seed(782)
+system.time(
+  s <- hstats(f_model, X = ml_train2)  
+)
+
+s
+
+plot(s) 
+```
+
+### Partial Dependence Plots
+
+Here some examples:
+
+```{r}
+pd <- partial_dep(f_model, v = c("AREA", "time_span"), X = ml_train2, grid_size = 500)
+plot(pd)
+plot(pd, d2_geom = "line", show_points = FALSE)
+
+```
+
+```{r}
+wb <- partial_dep(f_model, v = c("Water_bodies", "time_span"), X = ml_train2, grid_size = 500)
+plot(wb)
+plot(wb, d2_geom = "line", show_points = FALSE)
+
+```
+
+# PREDICTIONS
+
+Please note that the predictions showed in the study were made based on the **JPSP_points model**. Here, we include the data set used to make the predictions shown in the study and the code use it after running the **JPSP_points model**.
+
+## Libraries
+
+```{r}
+pacman::p_load(tidymodels, dplyr, sf,RCzechia,ggplot2)
+```
+
+## Data
+
+This data set includes all the predictor variables used in the model JPSP_points but calculated
+
+```{r}
+prediction_data<-readRDS("prediction_data.rds")
+
+```
+
+Predictors
+
+```{r}
+predictors<-c("pr","AREA", "lon", "lat","start_year","time_span", "median_ndvi","Broad_leaved_forest", "Complex_cultivation_patterns",  "Construction_sites", "Coniferous_forest","Green_urban_areas", "Land_principally_occupied_by_agriculture__with_significant_areas_of_natural_vegetation", "Mixed_forest", "Moors_and_heathland", "Natural_grasslands", "Pastures", "Transitional_woodland_shrub", "Water_bodies","Water_courses", "Protected_area")
+
+```
+
+## Predict
+
+```{r}
+
+modelo_rf<-extract_workflow(rf_fit)# this should be rf_fit of the JPSP_points model
+
+predicciones <- predict(modelo_rf, new_data = prediction_data)
+
+predictions <- predict(modelo_rf, new_data = prediction_data) %>%
+  bind_cols(prediction_data)
+
+```
+
+```{r}
+
+resultados <- data.frame(
+  time_span = prediction_data$time_span,
+  lat = prediction_data$lat,
+  lon = prediction_data$lon,
+  id = prediction_data$id,
+  richness_predicha = predicciones
+)
+
+resultados_filtrados <- resultados %>%
+  filter(time_span %in% c(1, 5, 15))
+
+```
+
+Min and max
+
+```{r}
+min_pred <- min(resultados$.pred, na.rm = TRUE)
+max_pred <- max(resultados$.pred, na.rm = TRUE)
+
+```
+
+CZ shape file
+
+```{r}
+cz_shp <- st_read("CZE_adm0.shp")
+```
+
+### Map time span 1yr
+
+```{r}
+library(ggplot2)
+library(viridis)
+library(dplyr)
+
+map_1yr <- ggplot(filter(resultados, time_span == 1), aes(x = lon, y = lat, color = .pred)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred)) +
+  labs(x = "", y = "Latitude") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = unit(c(1, 1, 1, 1), "cm")
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     
+    y = max(resultados$lat),     
+    label = "1 year",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+map_1yr
+```
+
+### Map time span 5yrs
+
+```{r}
+map_5yrs <- ggplot(filter(resultados, time_span == 5), aes(x = lon, y = lat, color = .pred)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred))+
+  labs(x = "", y = "Latitude") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    plot.margin = unit(c(1, 1, 1, 1), "cm") 
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     
+    y = max(resultados$lat),     
+    label = "5 years",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+map_5yrs
+
+```
+
+### Map time span 15yrs
+
+```{r}
+map_15yrs <- ggplot(filter(resultados, time_span == 15), aes(x = lon, y = lat, color = .pred)) +
+  geom_point(size = 2, alpha = 0.8) +
+  scale_color_distiller(palette = "Blues",  direction = 1,  name = "species richness",  limits = c(min_pred, max_pred)) +
+  labs(x = "Longitude", y = "Latitude") +
+  theme_minimal() +
+  theme(
+    legend.position = "none", 
+    plot.margin = unit(c(1, 1, 1, 1), "cm")
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     
+    y = max(resultados$lat),    
+    label = "15 years",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+map_15yrs
+
+```
+
+## Hotspots
+
+```{r}
+resultados <- resultados %>%
+  group_by(time_span) %>%
+  mutate(hotspots = as.integer(.pred >= quantile(.pred, probs = 0.9))) %>%
+  ungroup()
+
+```
+
+### 1 year
+
+```{r}
+hotspots_1yr2 <- ggplot(filter(resultados, time_span == 1), aes(x = lon, y = lat)) +
+  #geom_point(aes(color = .pred), size = 2, alpha = 0.8) +  # Base
+  geom_point(data = . %>% filter(hotspots == 1),  # Hotspots
+             color = "#F1605DFF", size = 2, shape = 19, stroke = 1) +
+   scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred)) +
+  labs( x = "", y = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = unit(c(1, 1, 1, 1), "cm") # Márgenes iguales para uniformidad
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     # Usa el mínimo valor de lon para la izquierda
+    y = max(resultados$lat),     # Usa el máximo valor de lat para arriba
+    label = "1 year",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+hotspots_1yr2
+
+```
+
+### 5 years
+
+```{r}
+hotspots_5yrs2 <- ggplot(filter(resultados, time_span == 5), aes(x = lon, y = lat)) +
+  #geom_point(aes(color = .pred), size = 2, alpha = 0.8) +  # Base
+  geom_point(data = . %>% filter(hotspots == 1),  # Hotspots
+             color = "#F1605DFF", size = 2, shape = 19, stroke = 1) +
+   scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred)) +
+  labs( x = "", y = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = unit(c(0.01, 0.01, 0.01, 0.01), "cm") # Márgenes iguales para uniformidad
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     # Usa el mínimo valor de lon para la izquierda
+    y = max(resultados$lat),     # Usa el máximo valor de lat para arriba
+    label = "5 years",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+hotspots_5yrs2
+
+```
+
+### 15 years
+
+```{r}
+hotspots_15yrs2 <- ggplot(filter(resultados, time_span == 15), aes(x = lon, y = lat)) +
+  #geom_point(aes(color = .pred), size = 2, alpha = 0.8) +  # Base
+  geom_point(data = . %>% filter(hotspots == 1),  # Hotspots
+             color = "#F1605DFF", size = 2, shape = 19, stroke = 1) +
+   scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred)) +
+  labs(x = "Longitude", y = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    # Deja solo el eje X visible y uniformidad con márgenes
+    plot.margin = unit(c(.01, .01, .01, .01), "cm")
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     # Usa el mínimo valor de lon para la izquierda
+    y = max(resultados$lat),     # Usa el máximo valor de lat para arriba
+    label = "15 years",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+hotspots_15yrs2
+
+```
+
+## Coldspots
+
+```{r}
+resultados <- resultados %>%
+  group_by(time_span) %>%
+  # Ordenamos ascendentemente por .pred
+  mutate(coldspots = as.integer(row_number(.pred) <= floor(n() * 0.1))) %>%
+  ungroup()
+
+```
+
+### 1 year
+
+```{r}
+coldspots_1yr2 <- ggplot(filter(resultados, time_span == 1), aes(x = lon, y = lat)) +
+  #geom_point(aes(color = .pred), size = 2, alpha = 0.8) +  # Base
+  geom_point(data = . %>% filter(coldspots == 1),  # Coldspots
+             color = "#451077FF", size = 2, shape = 19, stroke = 1) +
+  scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred)) +
+  labs(x = "", y = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = unit(c(0, 0, 0, 0), "cm") # Márgenes uniformes para igualar el tamaño
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     # Usa el mínimo valor de lon para la izquierda
+    y = max(resultados$lat),     # Usa el máximo valor de lat para arriba
+    label = "1 year",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+coldspots_1yr2
+
+```
+
+### 5 years
+
+```{r}
+coldspots_5yrs2 <- ggplot(filter(resultados, time_span == 5), aes(x = lon, y = lat)) +
+  #geom_point(aes(color = .pred), size = 2, alpha = 0.8) +  # Base
+  geom_point(data = . %>% filter(coldspots == 1),  # Coldspots
+             color = "#451077FF", size = 2, shape = 19, stroke = 1) +
+  scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred)) +
+  labs(x = "", y = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.x = element_blank(),
+    axis.text.x = element_blank(),
+    axis.ticks.x = element_blank(),
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    plot.margin = unit(c(1, 1, 1, 1), "cm") # Márgenes idénticos para mantener tamaño visual
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     # Usa el mínimo valor de lon para la izquierda
+    y = max(resultados$lat),     # Usa el máximo valor de lat para arriba
+    label = "5 years",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+coldspots_5yrs2
+
+```
+
+### 15 years
+
+```{r}
+coldspots_15yrs2 <- ggplot(filter(resultados, time_span == 15), aes(x = lon, y = lat)) +
+  #geom_point(aes(color = .pred), size = 2, alpha = 0.8) +  # Base
+  geom_point(data = . %>% filter(coldspots == 1),  # Coldspots
+             color = "#451077FF", size = 2, shape = 19, stroke = 1) +
+  scale_color_distiller(palette = "Blues", direction = 1, name = "species richness",limits = c(min_pred, max_pred)) +
+  labs(x = "Longitude", y = "") +
+  theme_minimal() +
+  theme(
+    legend.position = "none",
+    axis.title.y = element_blank(),
+    axis.text.y = element_blank(),
+    axis.ticks.y = element_blank(),
+    # Solo el eje X visible
+    plot.margin = unit(c(1, 1, 1, 1), "cm") # Márgenes iguales para tamaño uniforme
+  ) +
+  geom_sf(data = cz_shp, fill = NA, color = "black", size = 0.8, inherit.aes = FALSE)+
+  annotate(
+    "text",
+    x = max(resultados$lon),     # Usa el mínimo valor de lon para la izquierda
+    y = max(resultados$lat),     # Usa el máximo valor de lat para arriba
+    label = "15 years",
+    hjust = 1, vjust = 1,
+    size = 7, fontface = "bold"
+  )
+
+coldspots_15yrs2
+
+```
