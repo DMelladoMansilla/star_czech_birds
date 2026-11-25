@@ -1,0 +1,36 @@
+{
+  "title": "Time span mediates the association of biodiversity with area and environment",
+  "upload_type": "dataset",
+  "access_right": "open",
+  "license": "cc-by-4.0",
+  "language": "eng",
+  "description": "<p>Code and files for reproducible Random Forest analyses of temporal monitoring effects on Czech bird species richness.</p><h2>Files</h2><ul><li><code>all_data_star.rds</code>: Combined datasets (Atlases, jpsp_points, jpsp_transects, SPARSE)<ul><li><code>richness</code>: Response variable - Observed bird species richness in a given geographic unit (i.e., point, polygon, cell, transect)</li><li><code>time_span</code>: the time span of each survey (in years)</li><li><code>start_year</code>: the first year of sampling (year)</li><li><code>tas</code> (&deg;C): Mean temperature</li><li><code>tmin</code> (&deg;C): Min temperature</li><li><code>tmax</code> (&deg;C): Max temperature</li><li><code>pr</code> (mm): Precipitation</li><li><code>AREA</code> (km&sup2;): the area of each geographic unit</li><li><code>lat</code>, <code>lon</code> (&deg;): latitude, longitude</li><li><code>median_ndvi</code>: median of the Normalized Difference Vegetation Index. Unitless index, values range from -1 to 1.</li><li>CORINE Land Cover (km&sup2;): Area of each geographic unit covered by different land use covers (e.g., forests, urban, agriculture, water)</li><li><code>Protected_area</code> (km&sup2;): Area of each geographic unit covered by protected area. Nature Conservation Agency of the Czech Republic</li><li><code>DataSet</code> (Category): The name of the dataset to which each data entry belongs. These are: Atlases, jpsp_points, jpsp_transects, SPARSE.</li></ul></li><li><code>CZE_adm0.*</code>: Shapefile of the boundary of the Czech Republic.</li><li><code>random_forest_star.qmd</code>: Main Quarto document containing the code to run all our analyses.</li></ul>",
+  "creators": [
+    {"name": "Mellado Mansilla, Daniela", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0002-0712-4976"},
+    {"name": "Midolo, Gabriele", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0003-1316-2546"},
+    {"name": "Ortega, Gabriel", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0002-0516-5694"},
+    {"name": "Reif, Jiri", "affiliation": "Palacký University Olomouc", "orcid": "0000-0003-2553-7333"},
+    {"name": "Grattarola, Florencia", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0001-8282-5732"},
+    {"name": "Craven Moore, Dylan", "affiliation": "Universidad Mayor", "orcid": "0000-0003-3940-833X"},
+    {"name": "Leroy, François", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0001-7400-4475"},
+    {"name": "Perrone, Michela", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0002-4418-5380"},
+    {"name": "Šťastný, Karel", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0002-6388-964X"},
+    {"name": "Bejček, Vladimír", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0003-3783-5493"},
+    {"name": "Keil, Petr", "affiliation": "Czech University of Life Sciences Prague", "orcid": "0000-0003-3017-1858"}
+  ],
+  "keywords": [
+    "species-time relationship",
+    "species-time-area relationship",
+    "scaling",
+    "machine learning",
+    "temporal grain",
+    "species richness",
+    "random forests",
+    "birds",
+    "Czechia"
+  ],
+  "journal_title": "Global Ecology and Biogeography",
+  "grants": [
+    {"id": "10.13039/501100000780::101044740"}
+  ]
+}
